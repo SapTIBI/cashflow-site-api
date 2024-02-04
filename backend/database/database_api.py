@@ -1,6 +1,7 @@
-from psycopg2 import connect, sql, extras
+from psycopg2 import connect, sql, extras, Error
 from config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USERNAME
-#возвращает объект соединения с базой данных
+
+
 def get_database_connection():
     connection = connect(database=DB_NAME,
                         user=DB_USERNAME,
@@ -9,9 +10,8 @@ def get_database_connection():
                         port=DB_PORT)
     return connection
 
+
 def get_account_by_id(id):
-    conn = get_database_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
     get_account_query = sql.SQL("""
         SELECT 
         ac.id as account_id,
@@ -21,13 +21,19 @@ def get_account_by_id(id):
         FROM account ac
         WHERE ac.id = %s LIMIT 1;
     """)
-    cursor.execute(get_account_query, (id, ))
+    account = None
+    try:
+        with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
+            cursor.execute(get_account_query, (id, ))
+            account = cursor.fetchone()
+            conn.commit()
+    except Error as e:
+        conn.rollback()
     account = cursor.fetchone()
     return account
     
+
 def get_account_by_login(login):
-    conn = get_database_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
     get_account_query = sql.SQL(
     """
         SELECT 
@@ -38,13 +44,18 @@ def get_account_by_login(login):
         FROM account ac
         WHERE ac.login = %s LIMIT 1;
     """)
-    cursor.execute(get_account_query, (login, ))
-    account = cursor.fetchone()
+    account = None
+    try:
+        with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
+            cursor.execute(get_account_query, (login, ))
+            account = cursor.fetchone()
+            conn.commit()
+    except Error as e:
+        conn.rollback()
     return account
 
+
 def get_account_by_login_and_password(login, password):
-    conn = get_database_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
     get_account_query = sql.SQL(
     """
         SELECT 
@@ -55,13 +66,18 @@ def get_account_by_login_and_password(login, password):
         FROM account ac
         WHERE ac.login = %s AND ac.password = %s LIMIT 1;
     """)
-    cursor.execute(get_account_query, (login, password, ))
-    account = cursor.fetchone()
+    account = None
+    try:
+        with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
+            cursor.execute(get_account_query, (login, password, ))
+            account = cursor.fetchone()
+            conn.commit()
+    except Error as e:
+        conn.rollback()
     return account
 
+
 def login_new_account(name, login, hash_password):
-    conn = get_database_connection()
-    cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
     create_account_query = sql.SQL(
     """
         INSERT INTO account (name, login, password)
@@ -70,14 +86,10 @@ def login_new_account(name, login, hash_password):
     """)
     account_id = None
     try:
-        cursor.execute(create_account_query, (name, login, hash_password))
-        account_id = cursor.fetchone().get('id')
-        conn.commit()
-    except Exception as e:
+        with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
+            cursor.execute(create_account_query, (name, login, hash_password, ))
+            account_id = cursor.fetchone().get('id')
+            conn.commit()
+    except Error as e:
         conn.rollback()
-        print(f"Error: {e}")
-    finally:
-        if conn:
-            cursor.close()
-            conn.close()
     return account_id
