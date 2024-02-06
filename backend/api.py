@@ -2,11 +2,12 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 import jwt
-from flask import request, jsonify, make_response
+from flask import request, jsonify
 from flask.blueprints import Blueprint
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from database import database_api
+from utils import WalletUpdateModel, WalletCreateModel
 from config import SECRET_KEY
 
 
@@ -31,6 +32,18 @@ def token_required(api_function):
     return decorated
 
 
+@api_v1.before_request
+def before_request():
+    if request.method == 'POST' or request.method == 'PUT':
+        if not request.is_json:
+            return jsonify({"message": "Unsupported Media Type"}), 415
+        
+        
+@api_v1.errorhandler(400)
+def handle_bad_request(error):
+    return jsonify({"message": "Bad request"}), 400
+
+
 @api_v1.route('/testing/', methods=['GET'])
 @token_required
 def testing_api(account_id):
@@ -40,10 +53,12 @@ def testing_api(account_id):
         return jsonify({"account_id": account_id, 'account_name': account_name}), 200
     except database_api.DatabaseError as e:
         return jsonify({"message": 'Failed on server!'}), 500
+    except Exception as e:
+        return jsonify({"message": 'Unexpected error on server!'}), 500
 
 
-@api_v1.route('/auth/login/', methods=['POST'])
-def auth_login_new_account():
+@api_v1.route('/auth/registration/', methods=['POST'])
+def auth_registration():
     data = request.get_json()
     name = data.get('account_name')
     login = data.get('account_login')
@@ -64,8 +79,8 @@ def auth_login_new_account():
     return jsonify({"message": 'Failed to create account!'}), 409
 
 
-@api_v1.route('/auth/login/refresh', methods=['POST'])
-def auth_login_refresh():
+@api_v1.route('/auth/login/', methods=['POST'])
+def auth_login():
     data = request.get_json()
     login = data.get('account_login')
     password = data.get('account_password')
@@ -96,3 +111,99 @@ def logout_account(account_id):
     response.headers['Authorization'] = 'Bearer ' + encoded_jwt
     return response, 200
 
+
+@api_v1.route('/account/wallets/', methods=['POST'])
+@token_required
+def create_wallet_account(account_id):
+    data = request.get_json()
+    try:
+        validated_data = WalletCreateModel(**data).model_dump(exclude_unset=True)
+    except ValueError as e:
+        return jsonify({"message": 'Bad data!'}), 400
+    try:
+        mapping_db = {
+            "wallet_title": "title",
+            "wallet_description": "description",
+            "wallet_balance": "balance"
+        }
+        mapped_data = {mapping_db[key]:value for key, value in validated_data.items()}
+        created_wallet : dict = database_api.create_wallet_account(account_id=account_id, data=mapped_data)                                         
+        response_data = {
+            'message': 'Wallet was created!',
+            'data': created_wallet
+        }
+        return jsonify(response_data), 201
+    except database_api.DatabaseError as e:
+        return jsonify({"message": 'Failed on server!'}), 500
+    except Exception as e:
+        return jsonify({"message": 'Unexpected error on server!'}), 500
+
+
+@api_v1.route('/account/wallets/<int:wallet_id>', methods=['DELETE'])
+@token_required
+def delete_wallet_account(account_id, wallet_id):
+    try:
+        is_wallet_found = database_api.delete_wallet_account(account_id, wallet_id)
+        if not is_wallet_found:
+            return jsonify({"message": "No wallet found for deletion!"}), 404
+        return jsonify({"message": "Wallet deleted successfully!"}), 200
+    except database_api.DatabaseError as e:
+        return jsonify({"message": 'Failed on server!'}), 500
+    except Exception as e:
+        return jsonify({"message": 'Unexpected error on server!'}), 500
+    
+
+@api_v1.route('/account/wallets/<int:wallet_id>', methods=['PATCH'])
+@token_required
+def update_wallet_account(account_id, wallet_id):
+    data = request.get_json()
+    try:
+        validated_data = WalletUpdateModel(**data).model_dump(exclude_unset=True)
+    except ValueError as e:
+        return jsonify({"message": 'Bad data!'}), 400
+    if not validated_data:
+        return jsonify({"message": "At least one field is required for update"}), 400
+    mapping_db = {
+        "wallet_title": "title",
+        "wallet_description": "description",
+        "wallet_balance": "balance"
+    }
+    mapped_data = {mapping_db[key]:value for key, value in validated_data.items()}
+    try:
+        updated_wallet = database_api.update_wallet_account(account_id, wallet_id, mapped_data)
+    except database_api.DatabaseError as e:
+        return jsonify({"message": 'Failed on server!'}), 500
+    if not updated_wallet:
+        return jsonify({'message': 'No wallet found!'}), 404
+    wallet_id = updated_wallet.get('wallet_id')
+    wallet_balance = updated_wallet.get('wallet_balance')
+    wallet_title = updated_wallet.get('wallet_title')
+    wallet_description = updated_wallet.get('wallet_description')
+    response_data = {
+            'message': 'Wallet finded successfully!',
+            'data': {
+                'wallet_id:': wallet_id,
+                'wallet_balance': wallet_balance,
+                'wallet_title': wallet_title,
+                'wallet_description': wallet_description,
+            }
+        }
+    return jsonify(response_data), 200
+
+
+@api_v1.route('/account/wallets/<int:wallet_id>', methods=['GET'])
+@token_required
+def get_wallet_account(account_id, wallet_id):
+    try:
+        wallet_data = database_api.get_wallet_account(account_id, wallet_id)
+        if not wallet_data:
+            return jsonify({'message': 'No wallet found!'}), 404
+        response_data = {
+            'message': 'Wallet finded successfully!',
+            'data': wallet_data
+        }
+        return jsonify(response_data), 200
+    except database_api.DatabaseError as e:
+        return jsonify({"message": 'Failed on server!'}), 500
+    except Exception as e:
+        return jsonify({"message": 'Unexpected error on server!'}), 500
