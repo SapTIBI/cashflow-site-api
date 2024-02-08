@@ -1,12 +1,29 @@
-from psycopg2 import connect, sql, extras, Error
+import psycopg2
+from psycopg2 import sql, extras, Error
 from config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USERNAME
+from werkzeug.security import check_password_hash, generate_password_hash
+
 
 
 class DatabaseError(Exception):
+    """Ошибка, возникающая при работе с БД"""
     pass
 
+class DuplicatedInformationError(DatabaseError):
+    """Ошибка, возникающая при попытке создания сущности с уже существующими похожими данными"""
+    pass
+
+class IncorrectCredentialsError(DatabaseError):
+    """Ошибка, возникающая если сущность с такими данными не существует"""
+    pass
+
+class NoResultDataError(DatabaseError):
+    """Ошибка, возникающая если сущность с такими данными не существует"""
+    pass
+
+
 def get_database_connection():
-    connection = connect(database=DB_NAME,
+    connection = psycopg2.connect(database=DB_NAME,
                         user=DB_USERNAME,
                         password=DB_PASSWORD,
                         host=DB_HOST,
@@ -55,7 +72,8 @@ def get_account_by_login(login):
     return account
 
 
-def get_account_by_login_and_password(login, password):
+def get_account_by_credentials(account_credentials):
+    print(account_credentials)
     get_account_query = sql.SQL(
     """
         SELECT 
@@ -64,35 +82,49 @@ def get_account_by_login_and_password(login, password):
         ac.login as account_login,
         ac.password as account_password
         FROM account ac
-        WHERE ac.login = %s AND ac.password = %s LIMIT 1;
+        WHERE ac.login = %s;
     """)
-    account = None
     try:
         with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
-            cursor.execute(get_account_query, (login, password))
+            cursor.execute(get_account_query, (account_credentials.get('login'), ))
             account = cursor.fetchone()
+            print(account)
+            if not account:
+                raise IncorrectCredentialsError('Incorrect account login!')
+            if not check_password_hash(account.get('account_password'), account_credentials.get('password')):
+                raise IncorrectCredentialsError('Incorrect account password!')
+            del account['account_password']
     except Error as e:
+        print(e)
         raise DatabaseError('Database Error!')
     return account
 
 
-def login_new_account(name, login, hash_password):
+def login_new_account(account_data):
     create_account_query = sql.SQL(
     """
         INSERT INTO account (name, login, password)
         VALUES (%s, %s, %s)
-        RETURNING id;
+        RETURNING 
+            id as account_id,
+            name as account_name,
+            login as account_login;
     """)
-    account_id = None
     try:
         with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
-            cursor.execute(create_account_query, (name, login, hash_password))
-            account_id = cursor.fetchone().get('id')
+            name = account_data.get('name')
+            login = account_data.get('login')
+            hashed_password = generate_password_hash(account_data.get('password'))
+            cursor.execute(create_account_query, (name, login, hashed_password))
+            account = cursor.fetchone()
             conn.commit()
+    except psycopg2.errors.UniqueViolation as e:
+        conn.rollback()
+        raise DuplicatedInformationError('Account with this login already exist!')
     except Error as e:
         conn.rollback()
         raise DatabaseError('Database Error!')
-    return account_id
+    return account
 
 
 def create_wallet_account(account_id, data):
@@ -109,6 +141,7 @@ def create_wallet_account(account_id, data):
     """
     ).format(keys=sql.SQL(', ').join(sql.Identifier(key) for key in data.keys()),
              values=sql.SQL(', ').join(sql.Placeholder(key) for key in data.keys()))
+    wallet = None
     try:
         with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
             cursor.execute(create_wallet_account_query, data)
@@ -137,6 +170,8 @@ def delete_wallet_account(account_id, wallet_id):
     except Error as e:
         conn.rollback()
         raise DatabaseError('Database Error!')
+    if not deleted_rows:
+        raise NoResultDataError('Wallets not found')
     return deleted_rows
 
 def update_wallet_account(account_id, wallet_id, data):
@@ -165,10 +200,10 @@ def update_wallet_account(account_id, wallet_id, data):
             data['account_id'] = account_id
             cursor.execute(dynamic_query, data)
             wallet_information  = cursor.fetchone()
-            conn.commit()
     except Error as e:
-        conn.rollback()
         raise DatabaseError('Database Error!')
+    if not wallet_information:
+        raise NoResultDataError('Wallets not found')
     return wallet_information
 
 
@@ -188,8 +223,31 @@ def get_wallet_account(account_id, wallet_id):
         with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
             cursor.execute(get_wallet_account_query, (wallet_id, account_id))
             wallet_information  = cursor.fetchone()
-            conn.commit()
     except Error as e:
-        conn.rollback()
         raise DatabaseError('Database Error!')
+    if not wallet_information:
+        raise NoResultDataError('Wallets not found')
     return wallet_information
+
+
+def get_wallets_account(account_id):
+    get_wallets_account_query = sql.SQL(
+    """
+        SELECT 
+        wl.id as wallet_id,
+        wl.balance as wallet_balance,
+        wl.title as wallet_title,
+        wl.description as wallet_description
+        FROM wallet wl
+        WHERE wl.account_id = %s;
+    """)
+    wallets_information = None
+    try:
+        with get_database_connection() as conn, conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
+            cursor.execute(get_wallets_account_query, (account_id,  ))
+            wallets_information  = cursor.fetchall()
+    except Error as e:
+        raise DatabaseError('Database Error!')
+    if not wallets_information:
+        raise NoResultDataError('Wallets not found')
+    return wallets_information
